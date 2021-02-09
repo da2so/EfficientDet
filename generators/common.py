@@ -395,8 +395,6 @@ class Generator(keras.utils.Sequence):
         # compute network targets
         targets = self.compute_targets(image_group, annotations_group)
 
-        #print(np.shape(targets[0]))
-        #print(np.shape(targets[1]))
 
         if debug:
             return inputs, targets, annotations_group

@@ -24,7 +24,7 @@ if __name__ == '__main__':
     parser.add_argument('--random_transform', type = str2bool, default = 'True', help = 'Randomly transform image and annotations')
 
     # Arguments related to train config
-    parser.add_argument('--bs', type = int, default = 4, help = 'Batch size')
+    parser.add_argument('--bs', type = int, default = 8, help = 'Batch size')
     parser.add_argument('--steps', type=int, default = 10000, help = 'Number of steps per epoch.')
     parser.add_argument('--epochs', type = int, default = 50, help = 'Epoch number')
 
@@ -43,19 +43,17 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    trainer_obj = Trainer(
-                    coco_path           = args.coco_path,
-                    dataset_type        = args.dataset_type,
-                    random_transform    = args.random_transform,
-                    bs                  = args.bs,
-                    steps               = args.steps,
-                    epochs              = args.epochs,
-                    phi                 = args.phi,
-                    num_workers         = args.num_workers,
-                    use_multiprocessing = args.use_multiprocessing,
-                    max_queue_size      = args.max_queue_size,
-                    compute_val_loss    = args.compute_val_loss,
-                    save_path           = args.save_path
-                    )
+    trainer_obj = Trainer(  coco_path           = args.coco_path,
+                            dataset_type        = args.dataset_type,
+                            random_transform    = args.random_transform,
+                            bs                  = args.bs,
+                            steps               = args.steps,
+                            epochs              = args.epochs,
+                            phi                 = args.phi,
+                            num_workers         = args.num_workers,
+                            use_multiprocessing = args.use_multiprocessing,
+                            max_queue_size      = args.max_queue_size,
+                            compute_val_loss    = args.compute_val_loss,
+                            save_path           = args.save_path )
     trainer_obj.run()
 

@@ -159,7 +159,8 @@ def EfficientNet(
                 input_shape=None,
                 pooling=None,
                 classes=1000,
-                classifier_activation='softmax'):
+                classifier_activation='softmax',
+                strategy = None):
 
     if blocks_args == 'default':
         blocks_args = DEFAULT_BLOCKS_ARGS
@@ -173,123 +174,123 @@ def EfficientNet(
     if weights == 'imagenet' and include_top and classes != 1000:
         raise ValueError('If using `weights` as `"imagenet"` with `include_top`'
                         ' as true, `classes` should be 1000')
+    with strategy.scope():
+        # Determine proper input shape
+        input_shape = imagenet_utils.obtain_input_shape(
+            input_shape,
+            default_size=default_size,
+            min_size=32,
+            data_format=backend.image_data_format(),
+            require_flatten=include_top,
+            weights=weights)
 
-    # Determine proper input shape
-    input_shape = imagenet_utils.obtain_input_shape(
-        input_shape,
-        default_size=default_size,
-        min_size=32,
-        data_format=backend.image_data_format(),
-        require_flatten=include_top,
-        weights=weights)
-
-    if input_tensor is None:
-        img_input = layers.Input(shape=input_shape)
-    else:
-        if not backend.is_keras_tensor(input_tensor):
-            img_input = layers.Input(tensor=input_tensor, shape=input_shape)
+        if input_tensor is None:
+            img_input = layers.Input(shape=input_shape)
         else:
-            img_input = input_tensor
+            if not backend.is_keras_tensor(input_tensor):
+                img_input = layers.Input(tensor=input_tensor, shape=input_shape)
+            else:
+                img_input = input_tensor
 
-    bn_axis = 3 if backend.image_data_format() == 'channels_last' else 1
+        bn_axis = 3 if backend.image_data_format() == 'channels_last' else 1
 
-    def round_filters(filters, divisor=depth_divisor):
-        """Round number of filters based on depth multiplier."""
-        filters *= width_coefficient
-        new_filters = max(divisor, int(filters + divisor / 2) // divisor * divisor)
-        # Make sure that round down does not go down by more than 10%.
-        if new_filters < 0.9 * filters:
-            new_filters += divisor
-        return int(new_filters)
+        def round_filters(filters, divisor=depth_divisor):
+            """Round number of filters based on depth multiplier."""
+            filters *= width_coefficient
+            new_filters = max(divisor, int(filters + divisor / 2) // divisor * divisor)
+            # Make sure that round down does not go down by more than 10%.
+            if new_filters < 0.9 * filters:
+                new_filters += divisor
+            return int(new_filters)
 
-    def round_repeats(repeats):
-        """Round number of repeats based on depth multiplier."""
-        return int(math.ceil(depth_coefficient * repeats))
-    
-    features = []
-    
-    # Build stem
-    x = img_input
-    x = layers.Rescaling(1. / 255.)(x)
-    x = layers.Normalization(axis=bn_axis)(x)
-
-    x = layers.ZeroPadding2D(
-                            padding=imagenet_utils.correct_pad(x, 3),
-                            name='stem_conv_pad')(x)
-    x = layers.Conv2D(
-                    round_filters(32),
-                    3,
-                    strides=2,
-                    padding='valid',
-                    use_bias=False,
-                    kernel_initializer=CONV_KERNEL_INITIALIZER,
-                    name='stem_conv')(x)
-    x = layers.BatchNormalization(axis=bn_axis, name='stem_bn')(x)
-    x = layers.Activation(activation, name='stem_activation')(x)
-
-    # Build blocks
-    blocks_args = copy.deepcopy(blocks_args)
-    b = 0
-    blocks = float(sum(round_repeats(args['repeats']) for args in blocks_args))
-    for (i, args) in enumerate(blocks_args):
-        assert args['repeats'] > 0
-        # Update block input and output filters based on depth multiplier.
-        args['filters_in'] = round_filters(args['filters_in'])
-        args['filters_out'] = round_filters(args['filters_out'])
-
-        for j in range(round_repeats(args.pop('repeats'))):
-            # The first block needs to take care of stride and filter size increase.
-            if j > 0:
-                args['strides'] = 1
-                args['filters_in'] = args['filters_out']
-            x = block(
-                x,
-                activation,
-                drop_connect_rate * b / blocks,
-                name='block{}{}_'.format(i + 1, chr(j + 97)),
-                **args)
-            b += 1
+        def round_repeats(repeats):
+            """Round number of repeats based on depth multiplier."""
+            return int(math.ceil(depth_coefficient * repeats))
         
-        if i < len(blocks_args) - 1 and blocks_args[i + 1]['strides'] == 2:
-            features.append(str(i+1)+chr(j + 97))
-        elif i == len(blocks_args) - 1:
-            features.append(str(i+1)+chr(j + 97))
+        features = []
+        
+        # Build stem
+        x = img_input
+        x = layers.Rescaling(1. / 255.)(x)
+        x = layers.Normalization(axis=bn_axis)(x)
 
-    # Build top
-    x = layers.Conv2D(
-                    round_filters(1280),
-                    1,
-                    padding='same',
-                    use_bias=False,
-                    kernel_initializer=CONV_KERNEL_INITIALIZER,
-                    name='top_conv')(x)
-    x = layers.BatchNormalization(axis=bn_axis, name='top_bn')(x)
-    x = layers.Activation(activation, name='top_activation')(x)
-    if include_top:
-        x = layers.GlobalAveragePooling2D(name='avg_pool')(x)
-        if dropout_rate > 0:
-            x = layers.Dropout(dropout_rate, name='top_dropout')(x)
-        imagenet_utils.validate_activation(classifier_activation, weights)
-        x = layers.Dense(
-            classes,
-            activation=classifier_activation,
-            kernel_initializer=DENSE_KERNEL_INITIALIZER,
-            name='predictions')(x)
-    else:
-        if pooling == 'avg':
+        x = layers.ZeroPadding2D(
+                                padding=imagenet_utils.correct_pad(x, 3),
+                                name='stem_conv_pad')(x)
+        x = layers.Conv2D(
+                        round_filters(32),
+                        3,
+                        strides=2,
+                        padding='valid',
+                        use_bias=False,
+                        kernel_initializer=CONV_KERNEL_INITIALIZER,
+                        name='stem_conv')(x)
+        x = layers.BatchNormalization(axis=bn_axis, name='stem_bn')(x)
+        x = layers.Activation(activation, name='stem_activation')(x)
+
+        # Build blocks
+        blocks_args = copy.deepcopy(blocks_args)
+        b = 0
+        blocks = float(sum(round_repeats(args['repeats']) for args in blocks_args))
+        for (i, args) in enumerate(blocks_args):
+            assert args['repeats'] > 0
+            # Update block input and output filters based on depth multiplier.
+            args['filters_in'] = round_filters(args['filters_in'])
+            args['filters_out'] = round_filters(args['filters_out'])
+
+            for j in range(round_repeats(args.pop('repeats'))):
+                # The first block needs to take care of stride and filter size increase.
+                if j > 0:
+                    args['strides'] = 1
+                    args['filters_in'] = args['filters_out']
+                x = block(
+                    x,
+                    activation,
+                    drop_connect_rate * b / blocks,
+                    name='block{}{}_'.format(i + 1, chr(j + 97)),
+                    **args)
+                b += 1
+            
+            if i < len(blocks_args) - 1 and blocks_args[i + 1]['strides'] == 2:
+                features.append(str(i+1)+chr(j + 97))
+            elif i == len(blocks_args) - 1:
+                features.append(str(i+1)+chr(j + 97))
+
+        # Build top
+        x = layers.Conv2D(
+                        round_filters(1280),
+                        1,
+                        padding='same',
+                        use_bias=False,
+                        kernel_initializer=CONV_KERNEL_INITIALIZER,
+                        name='top_conv')(x)
+        x = layers.BatchNormalization(axis=bn_axis, name='top_bn')(x)
+        x = layers.Activation(activation, name='top_activation')(x)
+        if include_top:
             x = layers.GlobalAveragePooling2D(name='avg_pool')(x)
-        elif pooling == 'max':
-            x = layers.GlobalMaxPooling2D(name='max_pool')(x)
+            if dropout_rate > 0:
+                x = layers.Dropout(dropout_rate, name='top_dropout')(x)
+            imagenet_utils.validate_activation(classifier_activation, weights)
+            x = layers.Dense(
+                classes,
+                activation=classifier_activation,
+                kernel_initializer=DENSE_KERNEL_INITIALIZER,
+                name='predictions')(x)
+        else:
+            if pooling == 'avg':
+                x = layers.GlobalAveragePooling2D(name='avg_pool')(x)
+            elif pooling == 'max':
+                x = layers.GlobalMaxPooling2D(name='max_pool')(x)
 
-    # Ensure that the model takes into account
-    # any potential predecessors of `input_tensor`.
-    if input_tensor is not None:
-        inputs = layer_utils.get_source_inputs(input_tensor)
-    else:
-        inputs = img_input
+        # Ensure that the model takes into account
+        # any potential predecessors of `input_tensor`.
+        if input_tensor is not None:
+            inputs = layer_utils.get_source_inputs(input_tensor)
+        else:
+            inputs = img_input
 
-    # Create model.
-    model = training.Model(inputs, x, name=model_name)
+        # Create model.
+        model = training.Model(inputs, x, name=model_name)
 
     # Load weights.
     if weights == 'imagenet':
@@ -429,9 +430,10 @@ def block(inputs,
             x = layers.add([x, inputs], name=name + 'add')
     return x
 
-
+"""
 @keras_export('keras.applications.efficientnet.EfficientNetB0',
               'keras.applications.EfficientNetB0')
+"""
 def EfficientNetB0(include_top=False,
                    weights='imagenet',
                    input_tensor=None,
@@ -439,6 +441,7 @@ def EfficientNetB0(include_top=False,
                    pooling=None,
                    classes=1000,
                    classifier_activation='softmax',
+                   strategy = None,
                    **kwargs):
     return EfficientNet(
                         1.0,
@@ -453,11 +456,10 @@ def EfficientNetB0(include_top=False,
                         pooling=pooling,
                         classes=classes,
                         classifier_activation=classifier_activation,
+                        strategy = strategy,
                         **kwargs)
 
 
-@keras_export('keras.applications.efficientnet.EfficientNetB1',
-              'keras.applications.EfficientNetB1')
 def EfficientNetB1(include_top=False,
                    weights='imagenet',
                    input_tensor=None,
@@ -465,6 +467,7 @@ def EfficientNetB1(include_top=False,
                    pooling=None,
                    classes=1000,
                    classifier_activation='softmax',
+                   strategy = None,
                    **kwargs):
     return EfficientNet(
                         1.0,
@@ -479,11 +482,9 @@ def EfficientNetB1(include_top=False,
                         pooling=pooling,
                         classes=classes,
                         classifier_activation=classifier_activation,
+                        strategy = strategy,
                         **kwargs)
 
-
-@keras_export('keras.applications.efficientnet.EfficientNetB2',
-              'keras.applications.EfficientNetB2')
 def EfficientNetB2(include_top=False,
                    weights='imagenet',
                    input_tensor=None,
@@ -491,6 +492,7 @@ def EfficientNetB2(include_top=False,
                    pooling=None,
                    classes=1000,
                    classifier_activation='softmax',
+                   strategy = None,                   
                    **kwargs):
     return EfficientNet(
                         1.1,
@@ -505,11 +507,10 @@ def EfficientNetB2(include_top=False,
                         pooling=pooling,
                         classes=classes,
                         classifier_activation=classifier_activation,
+                        strategy = strategy,
                         **kwargs)
 
 
-@keras_export('keras.applications.efficientnet.EfficientNetB3',
-              'keras.applications.EfficientNetB3')
 def EfficientNetB3(include_top=False,
                    weights='imagenet',
                    input_tensor=None,
@@ -517,6 +518,7 @@ def EfficientNetB3(include_top=False,
                    pooling=None,
                    classes=1000,
                    classifier_activation='softmax',
+                   strategy = None,
                    **kwargs):
     return EfficientNet(
                         1.2,
@@ -531,11 +533,10 @@ def EfficientNetB3(include_top=False,
                         pooling=pooling,
                         classes=classes,
                         classifier_activation=classifier_activation,
+                        strategy = strategy,
                         **kwargs)
 
 
-@keras_export('keras.applications.efficientnet.EfficientNetB4',
-              'keras.applications.EfficientNetB4')
 def EfficientNetB4(include_top=False,
                    weights='imagenet',
                    input_tensor=None,
@@ -543,6 +544,7 @@ def EfficientNetB4(include_top=False,
                    pooling=None,
                    classes=1000,
                    classifier_activation='softmax',
+                   strategy = None,
                    **kwargs):
     return EfficientNet(
                         1.4,
@@ -557,11 +559,10 @@ def EfficientNetB4(include_top=False,
                         pooling=pooling,
                         classes=classes,
                         classifier_activation=classifier_activation,
+                        strategy = strategy,
                         **kwargs)
 
 
-@keras_export('keras.applications.efficientnet.EfficientNetB5',
-              'keras.applications.EfficientNetB5')
 def EfficientNetB5(include_top=False,
                    weights='imagenet',
                    input_tensor=None,
@@ -569,6 +570,7 @@ def EfficientNetB5(include_top=False,
                    pooling=None,
                    classes=1000,
                    classifier_activation='softmax',
+                   strategy = None,
                    **kwargs):
     return EfficientNet(
                         1.6,
@@ -583,11 +585,10 @@ def EfficientNetB5(include_top=False,
                         pooling=pooling,
                         classes=classes,
                         classifier_activation=classifier_activation,
+                        strategy = strategy,
                         **kwargs)
 
 
-@keras_export('keras.applications.efficientnet.EfficientNetB6',
-              'keras.applications.EfficientNetB6')
 def EfficientNetB6(include_top=False,
                    weights='imagenet',
                    input_tensor=None,
@@ -595,6 +596,7 @@ def EfficientNetB6(include_top=False,
                    pooling=None,
                    classes=1000,
                    classifier_activation='softmax',
+                   strategy = None,
                    **kwargs):
     return EfficientNet(
                         1.8,
@@ -609,11 +611,10 @@ def EfficientNetB6(include_top=False,
                         pooling=pooling,
                         classes=classes,
                         classifier_activation=classifier_activation,
+                        strategy = strategy,
                         **kwargs)
 
 
-@keras_export('keras.applications.efficientnet.EfficientNetB7',
-              'keras.applications.EfficientNetB7')
 def EfficientNetB7(include_top=False,
                    weights='imagenet',
                    input_tensor=None,
@@ -621,6 +622,7 @@ def EfficientNetB7(include_top=False,
                    pooling=None,
                    classes=1000,
                    classifier_activation='softmax',
+                   strategy = None,
                    **kwargs):
     return EfficientNet(
                         2.0,
@@ -635,6 +637,7 @@ def EfficientNetB7(include_top=False,
                         pooling=pooling,
                         classes=classes,
                         classifier_activation=classifier_activation,
+                        strategy = strategy,
                         **kwargs)
 
 

@@ -20,11 +20,12 @@ import numpy as np
 import json
 from tqdm import trange
 import cv2
+import os
 
 from generators.coco import CocoGenerator
 
 
-def evaluate(generator, model, threshold=0.01):
+def evaluate(generator, model, save_path, threshold=0.01):
     """
     Use the pycocotools to evaluate a COCO model on a dataset.
     Args
@@ -37,14 +38,16 @@ def evaluate(generator, model, threshold=0.01):
     image_ids = []
     for index in trange(generator.size(), desc='COCO evaluation: '):
         image = generator.load_image(index)
+
         src_image = image.copy()
         h, w = image.shape[:2]
-
         image, scale = generator.preprocess_image(image)
 
         # run network
         _, _, detections = model.predict_on_batch([np.expand_dims(image, axis=0)])
-        boxes, scores, labels = model.predict_on_batch([np.expand_dims(image, axis=0)])
+
+
+        boxes, scores, labels = detections
         boxes /= scale
         boxes[:, :, 0] = np.clip(boxes[:, :, 0], 0, w - 1)
         boxes[:, :, 1] = np.clip(boxes[:, :, 1], 0, h - 1)
@@ -72,7 +75,6 @@ def evaluate(generator, model, threshold=0.01):
             }
             # append detection to results
             results.append(image_result)
-
         #     box = np.round(box).astype(np.int32)
         #     class_name = generator.label_to_name(generator.coco_label_to_label(class_id + 1))
         #     ret, baseline = cv2.getTextSize(class_name, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
@@ -90,27 +92,27 @@ def evaluate(generator, model, threshold=0.01):
         return
 
     # write output
-    json.dump(results, open('{}_bbox_results.json'.format(generator.set_name), 'w'), indent=4)
-    json.dump(image_ids, open('{}_processed_image_ids.json'.format(generator.set_name), 'w'), indent=4)
+    json.dump(results, open('{}{}_bbox_results.json'.format(save_path, generator.set_name), 'w'), indent=4)
+    json.dump(image_ids, open('{}{}_processed_image_ids.json'.format(save_path, generator.set_name), 'w'), indent=4)
 
     # # load results in COCO evaluation tool
-    # coco_true = generator.coco
-    # coco_pred = coco_true.loadRes('{}_bbox_results.json'.format(generator.set_name))
-    #
-    # # run COCO evaluation
-    # coco_eval = COCOeval(coco_true, coco_pred, 'bbox')
-    # coco_eval.params.imgIds = image_ids
-    # coco_eval.evaluate()
-    # coco_eval.accumulate()
-    # coco_eval.summarize()
-    # return coco_eval.stats
+    coco_true = generator.coco
+    coco_pred = coco_true.loadRes('{}_bbox_results.json'.format(generator.set_name))
+    
+    # run COCO evaluation
+    coco_eval = COCOeval(coco_true, coco_pred, 'bbox')
+    coco_eval.params.imgIds = image_ids
+    coco_eval.evaluate()
+    coco_eval.accumulate()
+    coco_eval.summarize()
+    return coco_eval.stats
 
 
 class Evaluate(keras.callbacks.Callback):
     """ Performs COCO evaluation on each epoch.
     """
 
-    def __init__(self, generator, model, threshold=0.01):
+    def __init__(self, generator, model, save_path, threshold=0.01):
         super(Evaluate, self).__init__()
         """ Evaluate callback initializer.
         Args
@@ -121,7 +123,7 @@ class Evaluate(keras.callbacks.Callback):
         self.generator = generator
         self.active_model = model
         self.threshold = threshold
-
+        self.save_path = save_path
 
     def on_epoch_end(self, epoch, logs=None):
         logs = logs or {}
@@ -138,5 +140,18 @@ class Evaluate(keras.callbacks.Callback):
                     'AR @[ IoU=0.50:0.95 | area= small | maxDets=100 ]',
                     'AR @[ IoU=0.50:0.95 | area=medium | maxDets=100 ]',
                     'AR @[ IoU=0.50:0.95 | area= large | maxDets=100 ]']
-        evaluate(self.generator, self.active_model, self.threshold)
 
+        file_dir = f'{self.save_path}{epoch}/'
+        if not os.path.exists(file_dir):
+            os.makedirs(file_dir)
+        file_path = f'{file_dir}result.txt'
+        f = open(file_path, 'w')
+
+        result_stat = evaluate(self.generator, self.active_model,  file_dir, self.threshold)
+
+
+        for index, result in enumerate(result_stat):
+            tag = '{}. {} = {}'.format(index + 1, coco_tag[index], result) 
+            f.write(tag)
+        
+        f.close()  

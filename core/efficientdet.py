@@ -8,19 +8,19 @@ from tensorflow.keras import initializers
 from tensorflow.keras import models
 from tensorflow.keras.layers import Input
 
-from core.backbone.efficientnet import EfficientNetB0, EfficientNetB1, EfficientNetB2, EfficientNetB3
-from core.backbone.efficientnet import EfficientNetB4, EfficientNetB5, EfficientNetB6, EfficientNetB7
+
 from utils.anchors import anchors_for_shape
 from core.utils_layers import wBiFPNAdd, SeparableConvBlock, ConvBlock, RegressBoxes, ClipBoxes, FilterDetections
-from core.utils import PriorProbability
+from core.utils import PriorProbability, get_backbone
+
 phi2config = [
-            { 'r_input': 512,  'backbone': EfficientNetB0(input_tensor = Input((512, 512, 3))),   'w_bifpn': 64,  'd_bifpn': 3, 'd_class': 3},  #phi = 0
-            { 'r_input': 640,  'backbone': EfficientNetB1(input_tensor = Input((640, 640, 3))),   'w_bifpn': 88,  'd_bifpn': 4, 'd_class': 3},  #phi = 1
-            { 'r_input': 768,  'backbone': EfficientNetB2(input_tensor = Input((768, 768, 3))),   'w_bifpn': 112, 'd_bifpn': 5, 'd_class': 3},  #phi = 2
-            { 'r_input': 896,  'backbone': EfficientNetB3(input_tensor = Input((896, 896, 3))),   'w_bifpn': 160, 'd_bifpn': 6, 'd_class': 4},  #phi = 3
-            { 'r_input': 1024, 'backbone': EfficientNetB4(input_tensor = Input((1024, 1024, 3))), 'w_bifpn': 224, 'd_bifpn': 7, 'd_class': 4},  #phi = 4
-            { 'r_input': 1280, 'backbone': EfficientNetB5(input_tensor = Input((1280, 1280, 3))), 'w_bifpn': 288, 'd_bifpn': 7, 'd_class': 4},  #phi = 5
-            { 'r_input': 1280, 'backbone': EfficientNetB6(input_tensor = Input((1280, 1280, 3))), 'w_bifpn': 384, 'd_bifpn': 8, 'd_class': 5},  #phi = 6
+            { 'r_input': 512,  'backbone': 'EfficientNetB0', 'w_bifpn': 64,  'd_bifpn': 3, 'd_class': 3},  #phi = 0
+            { 'r_input': 640,  'backbone': 'EfficientNetB1', 'w_bifpn': 88,  'd_bifpn': 4, 'd_class': 3},  #phi = 1
+            { 'r_input': 768,  'backbone': 'EfficientNetB2', 'w_bifpn': 112, 'd_bifpn': 5, 'd_class': 3},  #phi = 2
+            { 'r_input': 896,  'backbone': 'EfficientNetB3', 'w_bifpn': 160, 'd_bifpn': 6, 'd_class': 4},  #phi = 3
+            { 'r_input': 1024, 'backbone': 'EfficientNetB4', 'w_bifpn': 224, 'd_bifpn': 7, 'd_class': 4},  #phi = 4
+            { 'r_input': 1280, 'backbone': 'EfficientNetB5', 'w_bifpn': 288, 'd_bifpn': 7, 'd_class': 4},  #phi = 5
+            { 'r_input': 1280, 'backbone': 'EfficientNetB6', 'w_bifpn': 384, 'd_bifpn': 8, 'd_class': 5},  #phi = 6
             ]
 
 MOMENTUM = 0.997
@@ -28,10 +28,11 @@ EPSILON = 1e-4
 
 
 class EfficientDet(models.Model):
-    def __init__(self, phi, num_classes, num_anchors = 9, score_threshold = 0.01, anchor_parameters = None, train = True):
+    def __init__(self, phi, num_classes, num_anchors = 9, score_threshold = 0.01, anchor_parameters = None, strategy = None):
         super(EfficientDet, self).__init__()
+        
+        self.strategy = strategy
 
-        self.train = train
         config = phi2config[phi]
         
         r_input = config['r_input']
@@ -39,17 +40,21 @@ class EfficientDet(models.Model):
         d_bifpn = config['d_bifpn']
         w_head = w_bifpn
         d_class = config['d_class']
+        backbone_name = config['backbone']
 
         self.img_shape = (r_input, r_input, 3)
+        self.img_tensor = Input(self.img_shape)
 
-        self.backbone = config['backbone']
+        self.backbone = get_backbone(model_name = backbone_name,
+                                     input_tensor = self.img_tensor, 
+                                     strategy = self.strategy)
         
         self.bifpn_list = []
         for i in range(d_bifpn):
             if i == 0:
-                self.bifpn_list.append(BiFPN(num_channels = w_bifpn ,first = True))
+                self.bifpn_list.append(BiFPN(num_channels = w_bifpn, first = True))
             else:
-                self.bifpn_list.append(BiFPN(num_channels = w_bifpn ,first = False))
+                self.bifpn_list.append(BiFPN(num_channels = w_bifpn, first = False))
         
         self.level = 0
 
@@ -59,14 +64,6 @@ class EfficientDet(models.Model):
         self.class_out_concat = layers.Concatenate(axis = 1, name='class_concat')
         self.box_out_concat = layers.Concatenate(axis = 1, name='box_concat')
 
-        self.anchors = anchors_for_shape((r_input, r_input), anchor_params = anchor_parameters)
-        self.anchors_input = np.expand_dims(self.anchors, axis=0)
-        
-        self.regressor_boxes = RegressBoxes(name = 'boxes')
-        self.clip_boxes = ClipBoxes(name = 'clipped_boxes')
-
-        self.filter_detector = FilterDetections(name = 'filtered_detections', score_threshold = score_threshold)
-        
     def call(self, inputs):
         out = self.backbone(inputs)
 
@@ -81,15 +78,7 @@ class EfficientDet(models.Model):
 
         out_dict= {'classification': class_out, 'regression': box_out}
 
-        if self.train == False:
-            delta_boxes = self.regressor_boxes([self.anchors_input, box_out[..., :4]])
-            delta_boxes = self.clip_boxes([self.img_shape, delta_boxes])
-
-            detections = self.filter_detector([delta_boxes, class_out])
-            
-            return class_out, box_out, detections
-        else:
-            return out_dict
+        return out_dict
         
 class EfficientDet_P(models.Model):
     def __init__(self, phi, efficientdet_model, anchor_parameters = None, score_threshold = 0.01):
@@ -102,7 +91,7 @@ class EfficientDet_P(models.Model):
         self.efficientdet_model = efficientdet_model
 
         self.anchors = anchors_for_shape((r_input, r_input), anchor_params = anchor_parameters)
-        self.anchors_input = np.expand_dims(self.anchors, axis=0)
+        self.anchors_input = np.expand_dims(self.anchors, axis = 0)
         
         self.regressor_boxes = RegressBoxes(name = 'boxes')
         self.clip_boxes = ClipBoxes(name = 'clipped_boxes')
@@ -189,7 +178,6 @@ class BiFPN(models.Model):
         self.p6_out_wbifpn_add = wBiFPNAdd(name='wbifpn_p6_out/add')
         self.p7_out_wbifpn_add = wBiFPNAdd(name='wbifpn_p7_out/add')
 
-
         self.swish = layers.Activation(lambda x: tf.nn.swish(x))
             
     def call(self, inputs):
@@ -214,7 +202,6 @@ class BiFPN(models.Model):
         else:
             p3_in, p4_in, p5_in, p6_in, p7_in = inputs
         
-
         p6_td = self.p6_td_wbifpn_add([p6_in, self.p7_upsample(p7_in)])
         p6_td = self.p6_separableconv_up(self.swish(p6_td))
 
@@ -226,7 +213,6 @@ class BiFPN(models.Model):
 
         p3_out = self.p3_out_wbifpn_add([p3_in, self.p4_upsample(p4_td)])
         p3_out = self.p3_separableconv_up(self.swish(p3_out))
-
 
         if self.first == True:
             p4_in = self.p4_down_channel2_conv2d(p4)
@@ -302,6 +288,7 @@ class BoxNet(models.Model):
 class ClassNet(models.Model):
     def __init__(self, width, depth,  num_classes=20, num_anchors=9, **kwargs):
         super(ClassNet, self).__init__(**kwargs)
+        
         self.width = width
         self.depth = depth
         self.num_classes = num_classes
